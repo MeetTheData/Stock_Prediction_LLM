@@ -1,0 +1,203 @@
+# Data Importing Libraries
+import yfinance as yf
+from  finvizfinance.quote import finvizfinance
+
+# Data Modeling Library
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+# Charts
+import plotly.graph_objects as go
+
+# Data Manipulation
+import pandas as pd
+import numpy as np
+
+# Avoid forecasting on Holidays
+import holidays
+
+#Create Local LLM Server Connection
+from langchain_community.llms import Ollama
+
+# Interacting Web APP UI
+import streamlit as st
+
+# Connect to Llama server
+llm = Ollama(model='llama3')
+
+# Classify Sentiment
+def classify_sentiment(title):
+    output = llm.invoke(f"Classify the sentiment as 'Positive', 'Negative' or 'Neutral' with just one word only, no additional words or reasoning: {title}")
+    return output.strip() #ensuring response is clean and without extra spaces
+
+
+# Process news data
+def get_news_data(ticker):
+
+    # Data Pull
+    stock = finvizfinance(ticker)
+    news_df = stock.ticker_news()
+    
+    # preprocess before passing into LLM
+    news_df["Title"] = news_df['Title'].str.lower()
+    
+    # Classify sentiment function applied to each row of news_df
+    news_df['sentiment'] = news_df['Title'].apply(classify_sentiment)
+    
+    # postprocess after passing into LLM
+    news_df['sentiment'] = news_df['sentiment'].str.upper()
+    news_df = news_df[news_df['sentiment'] != 'NEUTRAL']
+    news_df['Date'] = pd.to_datetime(news_df['Date'])
+    news_df['DateOnly'] = news_df['Date'].dt.date
+    
+    return news_df
+
+
+# Group and Process Sentiment data
+def process_sentiment_data(news_df):
+    
+    # reshape data to have df with columns: Date, No. of +ve articles and No. of -ve articles
+    grouped = news_df.groupby(['DateOnly', 'sentiment']).size().unstack(fill_value=0)
+    grouped = grouped.reindex(columns=['POSITIVE', 'NEGATIVE'], fill_value=0)
+    
+    # create rolling average that count number of +ve and -ve sentiment articles within past t days
+    grouped['7day_avg_positive'] = grouped['POSITIVE'].rolling(window=7, min_periods=1).sum()
+    grouped['7day_avg_negative'] = grouped['NEGATIVE'].rolling(window=7, min_periods=1).sum()
+    
+    # create % +ve by creating % measure
+    grouped['7day_pct_positive'] = grouped['POSITIVE']/ (grouped['POSITIVE'] + grouped['NEGATIVE'])
+    result_df = grouped.reset_index()
+    
+    return result_df
+
+
+# fetch and process stock data
+def get_stock_data(ticker, start_date, end_date):
+    stock_data = yf.download(ticker, start=start_date, end=end_date) # pull ticker data
+    stock_data['Pct_Change'] = stock_data['Close'].pct_change() * 100 #transform closing value to percent change
+    return stock_data
+
+
+# combine sentiment an stock data
+def combine(result_df, stock_data):
+    combined_df = result_df.set_index('DateOnly').join(stock_data[['Pct_Change']], how='inner')
+    combined_df['lagged_7day_pct_positive'] = combined_df['7day_pct_positive'].shift(1) # lag sentiment feature
+    return combined_df
+
+
+# calculate pearson correlation
+def calculate_correlation(combined_df):
+    correlation_pct_change = combined_df[['lagged_7day_pct_positive', 'Pct_Change']].corr().iloc[0,1]
+    return correlation_pct_change
+
+
+# future dates excluding weekends and holidays
+def get_future_dates(start_date, num_days):
+    us_holidays = holidays.US()
+    future_dates = []
+    current_date = start_date
+    while len(future_dates) < num_days:
+        if current_date.weekday() < 5 and current_date not in us_holidays:
+            future_dates.append(current_date)
+        current_date = pd.Timedelta(days=1)
+    return fututre_dates
+
+# fit ARIMAX and Forecast
+def fit_and_forecast(combined_df, forecast_steps=3):
+    endog = combined_df['Pct_Change'].dropna() # dependent variable
+    exog = combined_df['lagged_7day_pct_positive'].dropna() # predictor variable
+    endog = endog.loc[exog.index] # align variables
+    model = SARIMAX(endog,exog=exog, order=(1, 1, 1)) #ARIMAX model
+    fit = model.fit(disp=False) # fit model
+    
+    future_dates = get_future_dates(combined_df.index[-1], forecast_steps) # future dates
+    fuure_exog = combined_df['lagged_7day_pct_positive'][-forecast_steps:].values.reshape(-1,1) # future
+    
+    forecast = fit.get_forecast(steps=forecast_steps, exog=future_exog) #get forecast
+    forecast_mean = forecast.predicted_mean # predicted mean
+    forecast_ci = forecast.conf_int() # confidence intervals
+    
+    return forecast_mean, forecast_ci, future_dates # results
+
+
+# display plot
+def create_plot(combined_df, forecast_mean, forecast_ci, forecast_index):
+    # standardize sentiment proportion
+    sentiment_std = (combined_df['7day_pct_positive'] - combined_df['7day_pct_positive'].mean()) / combined_df['7day_pct_positive'].std()
+    
+    fig = go.Figure()
+    
+    # add standardized sentiment proportion
+    fig.add_trace(go.Scatter(
+        x=combined_df.index,
+        y=sentiment_std,
+        name='Standardized Sentiment Proportion',
+        line=dict(color='blue'),
+        mode='lines'
+    ))
+    
+    # add stock % change
+    fig.add_trace(go.Scatter(
+        x=combined_df.index,
+        y=combined_df['Pct_Change'],
+        name='Stock % Change',
+        line=dict(color='green'),
+        yaxis='y2',
+        mode='lines'
+    ))
+    
+    # add forecasted stock % change
+    fig.add_trace(go.Scatter(
+        x=forecast_index,
+        y=forecast_mean,
+        name='Forecasted % Change',
+        line=dict(color='red'),
+        mode='lines'
+    ))
+    
+    # add confidence intervals
+    fig.add_trace(go.Scatter(
+        x=np.concatenate([forecast_index, forecast_index[::-1]]),
+        y=fnp.concatenate([forecast_ci.iloc[:,0], forecast_ci.iloc[:, 1][::-1]]),
+        fill='toself',
+        fillcolor='rgba(255, 0, 0, 0.2)',
+        line=dict(color='rgba(255, 255, 255, 0)'),
+        hoverinfo='skip',
+        showlegned=False
+    ))
+    
+    # update layout with appropriate y-axis ranges
+    fig.update_layout(
+        title='Sentiment Proportion and Stock % Change with Forecast',
+        xaxis_title='Date',
+        yaxis=dict(
+            title='Stnadardized Sentiment Proportion',
+            titlefont=dict(color='blue')
+        ),
+        yaxis2=dict(
+            title='Stock % Change',
+            titlefont=dict(color='green'),
+            overlaying = 'y',
+            side='right'
+        ),
+        template='plotly_dark'
+    )
+    st.plotly_chart(fig)
+    
+    
+# streamlit app
+st.sidebar.title('Predicting Stock Prices by News Sentiment')
+ticker = st.sidebar.text_input('Enter stock ticker e.g. AAPL:', value='AAPL')
+run_button = st.sidebar.button('Run Analysis')
+
+if run_button:
+    news_df = get_news_data(ticker)
+    results_df = process_sentiment_data(news_df)
+    start_date = result_df['DateOnly'].min().strftime('%Y-%m-%d')
+    end_date = result_df['DateOnly'].max().strftime('%Y-%m-%d')
+    stock_data = get_stock_data(ticker, start_date, end_date)
+    combined_df = combine_data(result_df, stock_data)
+    correlation_pct_change = calculate_correlation(combined_df)
+    st.write(f'Pearson correlation between lagged sentiment score and stock percentage change:{correlation_pct_change}')
+    forecast_mean, forecast_ci, forecast_index = fit_and_forecast(combined_df)
+    create_plot(combined_df, forecast_mean, forecast_ci, forecast_index)
+    
