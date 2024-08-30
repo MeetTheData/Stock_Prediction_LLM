@@ -24,13 +24,13 @@ import streamlit as st
 # Connect to Llama server
 llm = Ollama(model='llama3')
 
-# Classify Sentiment
+# Classify Sentiment of news
 def classify_sentiment(title):
     output = llm.invoke(f"Classify the sentiment as 'Positive', 'Negative' or 'Neutral' with just one word only, no additional words or reasoning: {title}")
     return output.strip() #ensuring response is clean and without extra spaces
 
 
-# Process news data
+# Process news data 
 def get_news_data(ticker):
 
     # Data Pull
