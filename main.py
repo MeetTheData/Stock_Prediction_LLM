@@ -98,8 +98,8 @@ def get_future_dates(start_date, num_days):
     while len(future_dates) < num_days:
         if current_date.weekday() < 5 and current_date not in us_holidays:
             future_dates.append(current_date)
-        current_date = pd.Timedelta(days=1)
-    return fututre_dates
+        current_date += pd.Timedelta(days=1)
+    return future_dates
 
 # fit ARIMAX and Forecast
 def fit_and_forecast(combined_df, forecast_steps=3):
@@ -110,7 +110,7 @@ def fit_and_forecast(combined_df, forecast_steps=3):
     fit = model.fit(disp=False) # fit model
     
     future_dates = get_future_dates(combined_df.index[-1], forecast_steps) # future dates
-    fuure_exog = combined_df['lagged_7day_pct_positive'][-forecast_steps:].values.reshape(-1,1) # future
+    future_exog = combined_df['lagged_7day_pct_positive'][-forecast_steps:].values.reshape(-1,1) # future
     
     forecast = fit.get_forecast(steps=forecast_steps, exog=future_exog) #get forecast
     forecast_mean = forecast.predicted_mean # predicted mean
@@ -157,12 +157,12 @@ def create_plot(combined_df, forecast_mean, forecast_ci, forecast_index):
     # add confidence intervals
     fig.add_trace(go.Scatter(
         x=np.concatenate([forecast_index, forecast_index[::-1]]),
-        y=fnp.concatenate([forecast_ci.iloc[:,0], forecast_ci.iloc[:, 1][::-1]]),
+        y=np.concatenate([forecast_ci.iloc[:,0], forecast_ci.iloc[:, 1][::-1]]),
         fill='toself',
         fillcolor='rgba(255, 0, 0, 0.2)',
         line=dict(color='rgba(255, 255, 255, 0)'),
         hoverinfo='skip',
-        showlegned=False
+        showlegend=False
     ))
     
     # update layout with appropriate y-axis ranges
@@ -191,11 +191,11 @@ run_button = st.sidebar.button('Run Analysis')
 
 if run_button:
     news_df = get_news_data(ticker)
-    results_df = process_sentiment_data(news_df)
+    result_df = process_sentiment_data(news_df)
     start_date = result_df['DateOnly'].min().strftime('%Y-%m-%d')
     end_date = result_df['DateOnly'].max().strftime('%Y-%m-%d')
     stock_data = get_stock_data(ticker, start_date, end_date)
-    combined_df = combine_data(result_df, stock_data)
+    combined_df = combine(result_df, stock_data)
     correlation_pct_change = calculate_correlation(combined_df)
     st.write(f'Pearson correlation between lagged sentiment score and stock percentage change:{correlation_pct_change}')
     forecast_mean, forecast_ci, forecast_index = fit_and_forecast(combined_df)
