@@ -41,7 +41,7 @@ def get_news_data(ticker):
     news_df["Title"] = news_df['Title'].str.lower()
     
     # Classify sentiment function applied to each row of news_df
-    news_df['sentiment'] = news_df['Title'].apply(classify_sentiment)
+    news_df['sentiment'] = news_df['Title'].apply(classify_sentiment())
     
     # postprocess after passing into LLM
     news_df['sentiment'] = news_df['sentiment'].str.upper()
